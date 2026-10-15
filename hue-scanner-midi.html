@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hue Scanner to MIDI</title>
+<style>
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#1e1e1e;color:#fff;margin:10px;display:flex;flex-direction:column;align-items:center}
+.controls{display:flex;gap:12px 15px;align-items:center;background:#2d2d2d;padding:10px 20px;border-radius:8px;flex-wrap:wrap;justify-content:center;margin-bottom:15px}
+.container{display:flex;gap:20px;background:#2d2d2d;padding:20px;border-radius:8px;max-width:95%;flex-wrap:wrap;justify-content:center}
+.cvwrap{border:2px solid #444;background:#000}
+canvas{max-width:100%;max-height:500px;display:block}
+.sidebar{width:340px;max-height:500px;display:flex;flex-direction:column;border-left:1px solid #444;padding-left:20px}
+.title{font-weight:bold;margin-bottom:10px;border-bottom:2px solid #555;padding-bottom:5px}
+ul{list-style:none;padding:0;margin:0;overflow-y:auto}
+li{display:flex;align-items:center;margin-bottom:6px;font:0.82em monospace}
+.sw{width:18px;height:18px;border-radius:3px;margin-right:10px;border:1px solid #fff;flex-shrink:0}
+.badge{background:#ff5722;padding:2px 6px;border-radius:4px;font-weight:bold;margin-left:auto;min-width:30px;text-align:center}
+input,button,select{background:#444;color:#fff;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;font:inherit}
+button:hover{background:#555}
+#play{background:#2196f3}#midiBtn{background:#009688}
+label{font-size:14px;display:flex;gap:6px;align-items:center}
+#status{font-size:13px;color:#aaa;max-width:700px;text-align:center;margin-top:10px}
+</style></head><body>
+
+<div class="controls">
+  <input type="file" id="file" accept="image/*">
+  <label>Speed <span id="spdV">0.5</span><input type="range" id="spd" min="0.1" max="2" step="0.1" value="0.5"></label>
+  <label>Note every <span id="stV">8</span>px<input type="range" id="st" min="2" max="40" step="1" value="8"></label>
+  <button id="play">Pause</button>
+  <button id="restart">Restart</button>
+</div>
+<div class="controls">
+  <button id="midiBtn">Connect MIDI</button>
+  <label>Port <select id="port"><option>not connected</option></select></label>
+  <label>Channel <select id="chan"></select></label>
+  <label>Scale <select id="scale"><option value="0">Pentatonic</option><option value="1">Major</option><option value="2">Minor</option><option value="3">Chromatic</option></select></label>
+  <label>Low note <input type="number" id="low" value="48" min="0" max="100" style="width:64px"></label>
+  <label>Octaves <input type="number" id="oct" value="2" min="1" max="4" style="width:54px"></label>
+  <label><input type="checkbox" id="sound" checked>Browser beep</label>
+</div>
+
+<div class="container">
+  <div class="cvwrap"><canvas id="cv"></canvas></div>
+  <div class="sidebar"><div class="title">Colors under the scan line</div><ul id="list"></ul></div>
+</div>
+<div id="status">Click Connect MIDI and allow access. Use Chrome or Edge.</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const cv=$('cv'),ctx=cv.getContext('2d');
+const base=document.createElement('canvas'),bctx=base.getContext('2d',{willReadFrequently:true});
+const SCALES=[[0,2,4,7,9],[0,2,4,5,7,9,11],[0,2,3,5,7,8,10],[0,1,2,3,4,5,6,7,8,9,10,11]];
+const NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const noteName=m=>NAMES[m%12]+(Math.floor(m/12)-1);
+let scanX=0,speed=.5,step=+$('st').value,playing=true,lastStep=-1,midiOut=null,raf=null,ac=null;
+
+for(let i=1;i<=16;i++)$('chan').add(new Option(i,i-1));
+
+// ---------- image ----------
+function setBase(draw,w,h){base.width=cv.width=w;base.height=cv.height=h;draw(bctx);scanX=0;lastStep=-1}
+function placeholder(){setBase(c=>{const g=c.createLinearGradient(0,0,400,0);
+  ['red','yellow','green','cyan','blue','magenta'].forEach((k,i)=>g.addColorStop(i/5,k));c.fillStyle=g;c.fillRect(0,0,400,300)},400,300)}
+$('file').onchange=e=>{const f=e.target.files[0];if(!f)return;const im=new Image();
+  im.onload=()=>{setBase(c=>c.drawImage(im,0,0),im.width,im.height);if(!playing)toggle()};im.src=URL.createObjectURL(f)};
+
+// ---------- color math ----------
+function colStats(x){const h=base.height,d=bctx.getImageData(x,0,1,h).data;let sx=0,sy=0,S=0,V=0;
+  for(let y=0;y<h;y++){const r=d[y*4]/255,g=d[y*4+1]/255,b=d[y*4+2]/255,mx=Math.max(r,g,b),mn=Math.min(r,g,b),dl=mx-mn;
+    let hu=0;if(dl){hu=mx==r?((g-b)/dl)%6:mx==g?(b-r)/dl+2:(r-g)/dl+4;hu*=60;if(hu<0)hu+=360}
+    const s=mx?dl/mx:0;sx+=Math.cos(hu*Math.PI/180)*s;sy+=Math.sin(hu*Math.PI/180)*s;S+=s;V+=mx}
+  let hue=Math.atan2(sy,sx)*180/Math.PI;if(hue<0)hue+=360;return{h:hue,s:S/h,v:V/h}}
+function toNote(hue){const sc=SCALES[+$('scale').value],n=sc.length,total=n*(+$('oct').value),
+  deg=Math.min(total-1,Math.floor(hue/360*total));return +$('low').value+12*Math.floor(deg/n)+sc[deg%n]}
+
+// ---------- sound out ----------
+function noteOn(m,vel,ms){const ch=+$('chan').value;
+  if(midiOut){midiOut.send([0x90|ch,m,vel]);setTimeout(()=>midiOut.send([0x80|ch,m,0]),ms)}
+  if($('sound').checked){ac=ac||new AudioContext();const o=ac.createOscillator(),g=ac.createGain(),t=ac.currentTime;
+    o.frequency.value=440*Math.pow(2,(m-69)/12);g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(vel/127*.15,t+.01);
+    g.gain.exponentialRampToValueAtTime(.0001,t+ms/1000);o.connect(g).connect(ac.destination);o.start(t);o.stop(t+ms/1000+.05)}}
+function allOff(){if(midiOut)midiOut.send([0xB0|+$('chan').value,123,0])}
+
+$('midiBtn').onclick=async()=>{
+  if(!navigator.requestMIDIAccess){$('status').textContent='Web MIDI is not available here. Use Chrome or Edge on localhost or https.';return}
+  try{const acc=await navigator.requestMIDIAccess(),outs=[...acc.outputs.values()],sel=$('port');
+    sel.innerHTML='';outs.forEach(o=>sel.add(new Option(o.name,o.id)));
+    if(!outs.length){$('status').textContent='No MIDI outputs found. Create a loopMIDI (Windows) or IAC (Mac) port, then reload this page.';return}
+    midiOut=outs[0];sel.onchange=()=>{allOff();midiOut=acc.outputs.get(sel.value)};
+    $('status').textContent='Connected to '+midiOut.name+'. Pick the same port as an input in FL Studio.'}
+  catch(e){$('status').textContent='MIDI access was blocked: '+e.message}};
+
+// ---------- scan loop ----------
+function trigger(){const s=Math.floor(scanX/step);if(s===lastStep)return;lastStep=s;
+  const x=Math.min(base.width-1,Math.floor(s*step+step/2)),st=colStats(x),m=toNote(st.h);
+  noteOn(m,Math.round(25+100*st.v),(step/speed)*16.7*.85);
+  $('list').innerHTML='';
+  for(let i=0;i<12;i++){const y=Math.min(base.height-1,Math.floor(base.height/11*i)),p=bctx.getImageData(x,y,1,1).data;
+    const li=document.createElement('li');
+    li.innerHTML=`<div class="sw" style="background:rgb(${p[0]},${p[1]},${p[2]})"></div><span>Y:${y} RGB(${p[0]},${p[1]},${p[2]})</span>`;
+    $('list').appendChild(li)}
+  const li=document.createElement('li');li.innerHTML=`<span>Column average, hue ${Math.round(st.h)}&deg;</span><div class="badge">${noteName(m)}</div>`;
+  $('list').prepend(li)}
+function frame(){ctx.drawImage(base,0,0);
+  if(scanX>=base.width){scanX=0;lastStep=-1;allOff()}
+  trigger();
+  ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.shadowColor='rgba(0,0,0,.6)';ctx.shadowBlur=4;
+  ctx.beginPath();ctx.moveTo(scanX,0);ctx.lineTo(scanX,cv.height);ctx.stroke();ctx.shadowBlur=0}
+function tick(){if(!playing)return;frame();scanX+=speed;raf=requestAnimationFrame(tick)}
+function toggle(){playing=!playing;$('play').textContent=playing?'Pause':'Play';
+  if(playing){cancelAnimationFrame(raf);tick()}else{cancelAnimationFrame(raf);allOff()}}
+
+$('play').onclick=toggle;
+$('restart').onclick=()=>{scanX=0;lastStep=-1;allOff();if(!playing)frame()};
+$('spd').oninput=e=>{speed=+e.target.value;$('spdV').textContent=speed};
+$('st').oninput=e=>{step=+e.target.value;$('stV').textContent=step;lastStep=-1};
+placeholder();tick();
+</script></body></html>
