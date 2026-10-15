@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hue Scanner to MIDI (mean vs mode chords)</title>
+<style>
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#1e1e1e;color:#fff;margin:10px;display:flex;flex-direction:column;align-items:center}
+.controls{display:flex;gap:12px 15px;align-items:center;background:#2d2d2d;padding:10px 20px;border-radius:8px;flex-wrap:wrap;justify-content:center;margin-bottom:15px}
+.container{display:flex;gap:20px;background:#2d2d2d;padding:20px;border-radius:8px;max-width:95%;flex-wrap:wrap;justify-content:center}
+.cvwrap{border:2px solid #444;background:#000}
+canvas{max-width:100%;max-height:500px;display:block}
+.sidebar{width:440px;max-height:500px;display:flex;flex-direction:column;border-left:1px solid #444;padding-left:20px}
+.title{font-weight:bold;margin-bottom:10px;border-bottom:2px solid #555;padding-bottom:5px}
+ul{list-style:none;padding:0;margin:0;overflow-y:auto}
+li{display:flex;align-items:center;margin-bottom:6px;font:0.82em monospace}
+.sw{width:18px;height:18px;border-radius:3px;margin-right:10px;border:1px solid #fff;flex-shrink:0}
+.badge{background:#ff5722;padding:2px 6px;border-radius:4px;font-weight:bold;margin-left:auto;min-width:30px;text-align:center}
+.dim{opacity:.35}.info{line-height:1.3}.avg{border-bottom:1px solid #555;padding-bottom:6px;margin-bottom:8px}
+.panel{background:#2d2d2d;border-radius:8px;padding:14px 20px;margin-top:15px;max-width:95%;overflow-x:auto}
+table{border-collapse:collapse;font:0.85em monospace;width:100%}
+th,td{padding:6px 10px;text-align:left;border-bottom:1px solid #444;white-space:nowrap}
+th{color:#aaa;font-weight:600}
+.csw{display:inline-block;width:22px;height:22px;border-radius:3px;border:1px solid #fff;vertical-align:middle;background:#000}
+.hint{font-size:13px;color:#aaa;margin:10px 0}
+input,button,select{background:#444;color:#fff;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;font:inherit}
+button:hover{background:#555}
+#play{background:#2196f3}#midiBtn{background:#009688}
+label{font-size:14px;display:flex;gap:6px;align-items:center}
+#status,#now{font-size:13px;color:#aaa;max-width:700px;text-align:center;margin-top:10px}
+</style></head><body>
+
+<div class="controls">
+  <input type="file" id="file" accept="image/*">
+  <label>Speed <span id="spdV">0.5</span><input type="range" id="spd" min="0.1" max="2" step="0.1" value="0.5"></label>
+  <label>Note every <span id="stV">8</span>px<input type="range" id="st" min="2" max="40" step="1" value="8"></label>
+  <label>Rows <span id="rowV">12</span><input type="range" id="rows" min="1" max="24" step="1" value="12"></label>
+  <label>Dark cutoff <span id="cutV">8</span>%<input type="range" id="cut" min="0" max="50" step="1" value="8"></label>
+  <button id="play">Pause</button>
+  <button id="restart">Restart</button>
+</div>
+<div class="controls">
+  <button id="midiBtn">Connect MIDI</button>
+  <label>Port <select id="port"><option>not connected</option></select></label>
+  <label>Channel <select id="chan"></select></label>
+  <label>Scale <select id="scale"><option value="0">Pentatonic</option><option value="1">Major</option><option value="2">Minor</option><option value="3">Chromatic</option></select></label>
+  <label>Low note <input type="number" id="low" value="48" min="0" max="100" style="width:64px"></label>
+  <label>Octaves <input type="number" id="oct" value="2" min="1" max="4" style="width:54px"></label>
+  <label><input type="checkbox" id="sound" checked>Browser beep</label>
+  <label>Chord channel <select id="cchan"></select></label>
+  <label>Chord register <select id="shift"><option value="0">same</option><option value="-12" selected>1 octave down</option><option value="-24">2 octaves down</option></select></label>
+  <label>Scan chord <select id="csrc"><option value="mean">Mean</option><option value="mode">Mode</option><option value="off">Off</option></select></label>
+</div>
+
+<div class="container">
+  <div class="cvwrap"><canvas id="cv"></canvas></div>
+  <div class="sidebar"><div class="title">Average chord, then every row</div><ul id="list"></ul></div>
+</div>
+<div class="panel">
+  <div class="title">Chord comparison at the scan line</div>
+  <table>
+    <thead><tr><th>Version</th><th>Color</th><th>H</th><th>S</th><th>V</th><th>RGB</th><th>Size</th><th>Quality</th><th>Chord notes</th><th></th></tr></thead>
+    <tbody>
+      <tr><td>Mean (average color) <span id="m-x"></span></td><td><span class="csw" id="m-sw"></span></td><td id="m-h"></td><td id="m-s"></td><td id="m-v"></td><td id="m-rgb"></td><td id="m-n"></td><td id="m-q"></td><td id="m-notes"></td><td><button id="play-mean">Play</button></td></tr>
+      <tr><td>Mode (most common color) <span id="d-x"></span></td><td><span class="csw" id="d-sw"></span></td><td id="d-h"></td><td id="d-s"></td><td id="d-v"></td><td id="d-rgb"></td><td id="d-n"></td><td id="d-q"></td><td id="d-notes"></td><td><button id="play-mode">Play</button></td></tr>
+    </tbody>
+  </table>
+  <p class="hint">Pause the scan on a column, then press Play on each row to hear the two chords. "Scan chord" in the controls picks which one plays while scanning.</p>
+  <button id="play-ab">Play mean, then mode</button>
+</div>
+<div id="now"></div>
+<div id="status">Click Connect MIDI and allow access. Use Chrome or Edge.</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const cv=$('cv'),ctx=cv.getContext('2d');
+const base=document.createElement('canvas'),bctx=base.getContext('2d',{willReadFrequently:true});
+const SCALES=[[0,2,4,7,9],[0,2,4,5,7,9,11],[0,2,3,5,7,8,10],[0,1,2,3,4,5,6,7,8,9,10,11]];
+const NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const noteName=m=>NAMES[m%12]+(Math.floor(m/12)-1);
+let scanX=0,speed=.5,step=8,playing=true,lastStep=-1,midiOut=null,raf=null,ac=null;
+for(let i=1;i<=16;i++){$('chan').add(new Option(i,i-1));$('cchan').add(new Option(i,i-1))}
+
+// ---------- image ----------
+function setBase(draw,w,h){base.width=cv.width=w;base.height=cv.height=h;draw(bctx);scanX=0;lastStep=-1}
+function placeholder(){setBase(c=>{const g=c.createLinearGradient(0,0,400,0);
+  ['red','yellow','green','cyan','blue','magenta'].forEach((k,i)=>g.addColorStop(i/5,k));c.fillStyle=g;c.fillRect(0,0,400,300)},400,300)}
+$('file').onchange=e=>{const f=e.target.files[0];if(!f)return;const im=new Image();
+  im.onload=()=>{setBase(c=>c.drawImage(im,0,0),im.width,im.height);if(!playing)toggle()};im.src=URL.createObjectURL(f)};
+
+// ---------- color math ----------
+function hsv(r,g,b){r/=255;g/=255;b/=255;const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;let h=0;
+  if(d){h=mx==r?((g-b)/d)%6:mx==g?(b-r)/d+2:(r-g)/d+4;h*=60;if(h<0)h+=360}
+  return{h,s:mx?d/mx:0,v:mx}}
+function toNote(hue){const sc=SCALES[+$('scale').value],n=sc.length,total=n*(+$('oct').value),
+  deg=Math.min(total-1,Math.floor(hue/360*total));return +$('low').value+12*Math.floor(deg/n)+sc[deg%n]}
+
+// ---------- THE MAPPING: one pixel -> the notes it plays ----------
+// @@VOICES_START
+function voices(p){const m=toNote(p.h);return{notes:[m],label:noteName(m)}}
+// @@VOICES_END
+
+// ---------- sound out ----------
+function sendNotes(list,ms,sel){const ch=+$(sel||'chan').value;
+  if(midiOut){list.forEach(([n,v])=>midiOut.send([0x90|ch,n,v]));setTimeout(()=>list.forEach(([n])=>midiOut.send([0x80|ch,n,0])),ms)}
+  if($('sound').checked){ac=ac||new AudioContext();const t=ac.currentTime,dur=ms/1000;
+    list.forEach(([n,v])=>{const o=ac.createOscillator(),g=ac.createGain();o.frequency.value=440*Math.pow(2,(n-69)/12);
+      g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(v/127*.1,t+.01);g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+      o.connect(g).connect(ac.destination);o.start(t);o.stop(t+dur+.05)})}}
+function allOff(){if(midiOut)['chan','cchan'].forEach(id=>midiOut.send([0xB0|+$(id).value,123,0]))}
+
+$('midiBtn').onclick=async()=>{
+  if(!navigator.requestMIDIAccess){$('status').textContent='Web MIDI is not available here. Use Chrome or Edge on localhost or https.';return}
+  try{const acc=await navigator.requestMIDIAccess(),outs=[...acc.outputs.values()],sel=$('port');
+    sel.innerHTML='';outs.forEach(o=>sel.add(new Option(o.name,o.id)));
+    if(!outs.length){$('status').textContent='No MIDI outputs found. Create a loopMIDI (Windows) or IAC (Mac) port, then reload this page.';return}
+    midiOut=outs[0];sel.onchange=()=>{allOff();midiOut=acc.outputs.get(sel.value)};
+    $('status').textContent='Connected to '+midiOut.name+'. Pick the same port as an input in FL Studio.'}
+  catch(e){$('status').textContent='MIDI access was blocked: '+e.message}};
+
+// ---------- scan loop ----------
+// ----- average chord: hue = root, saturation = size, RGB = quality -----
+function saturationToChordSize(s){s=s>1?s/100:s;s=Math.max(0,Math.min(1,s));return Math.min(4,1+Math.floor(s*4))}
+const NEUTRAL=0.12;
+const QUAL={maj:[0,4,7,11],min:[0,3,7,10],sus:[0,5,7,10],neu:[0,7,12,19]};
+function quality(r,g,b){const R=r/255,G=g/255,B=b/255,mx=Math.max(R,G,B),mn=Math.min(R,G,B);
+  if(mx-mn<NEUTRAL)return 'neu';return mx==R?'maj':mx==G?'min':'sus'}
+function columnAverage(d,H,cut){let sx=0,sy=0,S=0,V=0,r=0,g=0,b=0,n=0;
+  for(let y=0;y<H;y++){const R=d[y*4],G=d[y*4+1],B=d[y*4+2],c=hsv(R,G,B);if(c.v<cut)continue;
+    sx+=Math.cos(c.h*Math.PI/180)*c.s;sy+=Math.sin(c.h*Math.PI/180)*c.s;S+=c.s;V+=c.v;r+=R;g+=G;b+=B;n++}
+  if(!n)return null;let h=Math.atan2(sy,sx)*180/Math.PI;if(h<0)h+=360;
+  return{h,s:S/n,v:V/n,r:Math.round(r/n),g:Math.round(g/n),b:Math.round(b/n)}}
+let last=null;
+// Mode: bucket every pixel in the column by hue (12 bins + gray), saturation (4) and brightness (4); the fullest bucket wins.
+function columnMode(d,H,cut){const bins={};let n=0;
+  for(let y=0;y<H;y++){const R=d[y*4],G=d[y*4+1],B=d[y*4+2],c=hsv(R,G,B);if(c.v<cut)continue;n++;
+    const hb=c.s<.12?12:Math.floor(c.h/30)%12,key=hb*16+Math.min(3,Math.floor(c.s*4))*4+Math.min(3,Math.floor(c.v*4));
+    const o=bins[key]||(bins[key]={n:0,sx:0,sy:0,S:0,V:0,r:0,g:0,b:0});
+    o.n++;o.sx+=Math.cos(c.h*Math.PI/180)*c.s;o.sy+=Math.sin(c.h*Math.PI/180)*c.s;o.S+=c.s;o.V+=c.v;o.r+=R;o.g+=G;o.b+=B}
+  if(!n)return null;let best=null;for(const k in bins)if(!best||bins[k].n>best.n)best=bins[k];
+  let h=Math.atan2(best.sy,best.sx)*180/Math.PI;if(h<0)h+=360;const m=best.n;
+  return{h,s:best.S/m,v:best.V/m,r:Math.round(best.r/m),g:Math.round(best.g/m),b:Math.round(best.b/m),share:m/n}}
+function fillRow(p,a,ch,extra){const set=(k,v)=>{$(p+'-'+k).innerHTML=v};
+  if(!a){['h','s','v','rgb','n','q','notes'].forEach(k=>set(k,'-'));$(p+'-sw').style.background='#000';set('x',extra||'');return}
+  $(p+'-sw').style.background=`rgb(${a.r},${a.g},${a.b})`;
+  set('h',Math.round(a.h)+'°');set('s',Math.round(a.s*100)+'%');set('v',Math.round(a.v*100)+'%');
+  set('rgb',`${a.r},${a.g},${a.b}`);set('n',ch.n);set('q',ch.q);set('notes',ch.notes.map(noteName).join(' '));set('x',extra||'')}
+function audition(which){const e=last&&last[which];
+  if(!e||!e.ch){$('status').textContent='No chord for this column yet. Let the scan run, or move to a column with color.';return}
+  sendNotes(e.ch.notes.map(n=>[n,Math.round(25+100*e.a.v)]),1500,'cchan')}
+$('play-mean').onclick=()=>audition('mean');
+$('play-mode').onclick=()=>audition('mode');
+$('play-ab').onclick=()=>{audition('mean');setTimeout(()=>audition('mode'),1800)};
+function averageChord(a){const n=saturationToChordSize(a.s),q=quality(a.r,a.g,a.b),root=toNote(a.h)+(+$('shift').value);
+  return{notes:QUAL[q].slice(0,n).map(i=>root+i).filter(m=>m>=0&&m<=127),q,n,root}}
+
+function trigger(){const s=Math.floor(scanX/step);if(s===lastStep)return;lastStep=s;
+  const x=Math.min(base.width-1,Math.floor(s*step+step/2)),H=base.height,d=bctx.getImageData(x,0,1,H).data,
+    R=+$('rows').value,cut=+$('cut').value/100,vm=new Map(),ul=$('list');ul.innerHTML='';
+  const add=(sw,l1,l2,badge,cls)=>{const li=document.createElement('li');if(cls)li.className=cls;
+    li.innerHTML=`<div class="sw" style="background:${sw}"></div><div class="info"><div>${l1}</div><div>${l2}</div></div><div class="badge">${badge}</div>`;ul.appendChild(li)};
+  const fmt=c=>`H:${Math.round(c.h)}\u00b0 S:${Math.round(c.s*100)}% V:${Math.round(c.v*100)}%`;
+  const a=columnAverage(d,H,cut),ch=a?averageChord(a):null,m=columnMode(d,H,cut),mch=m?averageChord(m):null;
+  last={mean:{a,ch},mode:{a:m,ch:mch}};fillRow('m',a,ch,'');fillRow('d',m,mch,m?'('+Math.round(m.share*100)+'% of column)':'');
+  const src=$('csrc').value,pick=src==='mode'?{a:m,ch:mch}:src==='off'?{a:null,ch:null}:{a,ch};
+  if(a)add(`rgb(${a.r},${a.g},${a.b})`,`AVERAGE ${fmt(a)}`,`RGB(${a.r},${a.g},${a.b}) &rarr; ${ch.notes.map(noteName).join(' ')}`,`${NAMES[ch.root%12]} ${ch.q}\u00d7${ch.n}`,'avg');
+  else add('#000','AVERAGE','all rows below cutoff','rest','avg dim');
+  for(let i=0;i<R;i++){const y=Math.min(H-1,Math.floor(H*(i+.5)/R)),r=d[y*4],g=d[y*4+1],b=d[y*4+2],c=hsv(r,g,b);
+    const silent=c.v<cut,vo=silent?{notes:[],label:'rest'}:voices({r,g,b,...c}),vel=25+100*c.v;
+    vo.notes.forEach(n=>{if(n>=0&&n<=127)vm.set(n,Math.max(vm.get(n)||0,vel))});
+    add(`rgb(${r},${g},${b})`,`Y:${y} ${fmt(c)}`,`RGB(${r},${g},${b}) &rarr; ${vo.notes.map(noteName).join(' ')||'rest'}`,vo.label,silent?'dim':'')}
+  const ms=(step/speed)*16.7*.85,k=Math.min(1,2.5/Math.sqrt(vm.size||1));
+  sendNotes([...vm].map(([n,v])=>[n,Math.max(1,Math.round(v*k))]),ms,'chan');
+  if(pick.ch)sendNotes(pick.ch.notes.map(n=>[n,Math.round(25+100*pick.a.v)]),ms,'cchan');
+  $('now').textContent=vm.size+' single notes + '+(pick.ch?pick.ch.notes.length:0)+'-note '+src+' chord'}
+function frame(){ctx.drawImage(base,0,0);
+  if(scanX>=base.width){scanX=0;lastStep=-1;allOff()}
+  trigger();
+  ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.shadowColor='rgba(0,0,0,.6)';ctx.shadowBlur=4;
+  ctx.beginPath();ctx.moveTo(scanX,0);ctx.lineTo(scanX,cv.height);ctx.stroke();ctx.shadowBlur=0}
+function tick(){if(!playing)return;frame();scanX+=speed;raf=requestAnimationFrame(tick)}
+function toggle(){playing=!playing;$('play').textContent=playing?'Pause':'Play';
+  cancelAnimationFrame(raf);if(playing)tick();else allOff()}
+
+$('play').onclick=toggle;
+$('restart').onclick=()=>{scanX=0;lastStep=-1;allOff();if(!playing)frame()};
+$('spd').oninput=e=>{speed=+e.target.value;$('spdV').textContent=speed};
+$('st').oninput=e=>{step=+e.target.value;$('stV').textContent=step;lastStep=-1};
+$('rows').oninput=e=>{$('rowV').textContent=e.target.value;lastStep=-1};
+$('cut').oninput=e=>{$('cutV').textContent=e.target.value};
+placeholder();tick();
+</script></body></html>
